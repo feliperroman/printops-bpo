@@ -205,4 +205,39 @@ describe('Validación Oficial de los 5 KPIs contra seed-tickets-30.json', () => 
     expect(body.calculated_cost_cop).toBe(615500);
     expect(body.calculated_cost_cop).not.toBe(1);
   });
+
+  it('RNF-03 & KPI-04 — Rate Limiting bloquea abuso en puerta de entrada con HTTP 429 y 0 tokens', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/tickets/triage',
+      headers: {
+        'x-simulate-rate-limit': 'true'
+      },
+      payload: {
+        ticket_id: 'TCK-ABUSE-01',
+        request_type: 'QUOTATION',
+        part_name: 'Flood Attack'
+      }
+    });
+
+    expect(response.statusCode).toBe(429);
+    const body = JSON.parse(response.payload);
+    expect(body.tokens_consumed).toBe(0);
+    expect(body.llm_token_waste).toBe(false);
+    expect(body.triage_rule_applied).toBe('RULE_GATEWAY_RATE_LIMIT_BLOCKED');
+  });
+
+  it('RNF-04 — Trazabilidad y Auditoría Persistente registra eventos de tickets y SLAs', async () => {
+    const auditResp = await app.inject({
+      method: 'GET',
+      url: '/api/audit'
+    });
+
+    expect(auditResp.statusCode).toBe(200);
+    const auditBody = JSON.parse(auditResp.payload);
+    expect(auditBody.total_records).toBeGreaterThanOrEqual(30);
+    expect(Array.isArray(auditBody.records)).toBe(true);
+    expect(auditBody.records[0]).toHaveProperty('ticket_id');
+    expect(auditBody.records[0]).toHaveProperty('latency_ms');
+  });
 });

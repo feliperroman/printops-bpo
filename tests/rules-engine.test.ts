@@ -116,4 +116,23 @@ describe('5. Colas de Prioridad Atómicas BPO', () => {
 
     expect(q.getQueueLength()).toBe(0);
   });
+
+  it('debe activar SLA_BREACH_RISK y reintegrar el ticket si el operador supera el TTL de 30 minutos (Caso Borde 07)', async () => {
+    const q = new RedisQueueManager(undefined, 1); // TTL de 1 segundo para prueba
+    q.clear();
+
+    await q.enqueueTicket('TCK-P1-STUCK', 'P1_HARDWARE_MAINTENANCE');
+    const dispatched = await q.dispatchNextTicket('OP-GHOST');
+    expect(dispatched?.ticketId).toBe('TCK-P1-STUCK');
+    expect(q.getQueueLength()).toBe(0);
+
+    // Simular vencimiento de TTL de sesión retrocediendo el heartbeat
+    q.setOperatorStatus('OP-GHOST', 'BUSY_MAINTENANCE', Date.now() - 5000);
+
+    const slaEval = q.evaluateSlaBreachRisk();
+    expect(q.getOperatorStatus('OP-GHOST')).toBe('OFFLINE');
+    expect(slaEval.sla_breach_risk).toBe(true);
+    expect(slaEval.reasons).toContain('OPERATOR_TTL_EXPIRED_TICKET_REQUEUED');
+    expect(q.getQueueLength()).toBe(1);
+  });
 });

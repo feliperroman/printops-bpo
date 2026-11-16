@@ -25,6 +25,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "stl_lifecycle" {
     id     = "expire-temp-stl-cache"
     status = "Enabled"
 
+    filter {}
+
     expiration {
       days = 30
     }

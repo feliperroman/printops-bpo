@@ -8,7 +8,7 @@ on:
 
 jobs:
   code-quality:
-    name: 1. Lint & Typecheck
+    name: 1. Compliance, SAST & Typecheck
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -23,11 +23,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: TypeScript Static Typecheck
-        run: npx tsc --noEmit
+      - name: Run Static Typecheck & Architecture Compliance
+        run: npm run lint
 
   kpi-verification:
-    name: 2. KPI Mathematical Validation (30 Tickets)
+    name: 2. Testing & 5-KPI Mathematical Validation (30 Tickets)
     needs: code-quality
     runs-on: ubuntu-latest
     services:
@@ -40,7 +40,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U printops_user -d printops_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -67,7 +67,7 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Run Test Suite against seed-tickets-30.json
+      - name: Run Test Suite against seed-tickets-30.json (Live Postgres & Redis)
         env:
           DATABASE_URL: postgresql://printops_user:printops_secret@localhost:5432/printops_test
           REDIS_URL: redis://localhost:6379
@@ -75,7 +75,7 @@ jobs:
         run: npm test
 
   docker-build:
-    name: 3. Docker Multi-Stage Build & Security
+    name: 3. Docker Multi-Stage Build & Container Compliance
     needs: kpi-verification
     runs-on: ubuntu-latest
     steps:
@@ -85,7 +85,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Production Image
+      - name: Build Production Runner Image
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -93,17 +93,23 @@ jobs:
           load: true
           tags: printops-bpo:ci
 
-      - name: Test Container Healthcheck
+      - name: Verify Non-Root Container User (RNF-05 Compliance)
+        run: |
+          CONTAINER_USER=$(docker run --rm printops-bpo:ci whoami)
+          echo "Container user is: $CONTAINER_USER"
+          test "$CONTAINER_USER" = "printops"
+
+      - name: Verify Live Container Healthcheck Endpoint (/health)
         run: |
           docker run -d --name test-app -p 3000:3000 \
             -e DATABASE_URL=postgresql://mock:mock@mock:5432/mock \
             -e REDIS_URL=redis://mock:6379 \
             printops-bpo:ci
-          sleep 5
-          docker inspect --format='{{json .State.Health.Status}}' test-app || true
+          curl --fail --retry 10 --retry-delay 2 --retry-connrefused http://localhost:3000/health
+          docker stop test-app && docker rm test-app
 
   terraform-localstack:
-    name: 4. Terraform IaC Validation
+    name: 4. Terraform Plan, Validate & LocalStack Apply
     needs: code-quality
     runs-on: ubuntu-latest
     services:
@@ -132,9 +138,16 @@ jobs:
       - name: Terraform Validate
         run: terraform -chdir=terraform validate
 
+      - name: Terraform Plan (Execution Plan Artifact)
+        env:
+          AWS_ACCESS_KEY_ID: mock_key
+          AWS_SECRET_ACCESS_KEY: mock_secret
+          AWS_DEFAULT_REGION: us-east-1
+        run: terraform -chdir=terraform plan -out=tfplan
+
       - name: Terraform Apply against LocalStack
         env:
           AWS_ACCESS_KEY_ID: mock_key
           AWS_SECRET_ACCESS_KEY: mock_secret
           AWS_DEFAULT_REGION: us-east-1
-        run: terraform -chdir=terraform apply -auto-approve
+        run: terraform -chdir=terraform apply -auto-approve tfplan
