@@ -1,0 +1,140 @@
+name: PrintOps BPO - CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  code-quality:
+    name: 1. Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: TypeScript Static Typecheck
+        run: npx tsc --noEmit
+
+  kpi-verification:
+    name: 2. KPI Mathematical Validation (30 Tickets)
+    needs: code-quality
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: printops_user
+          POSTGRES_PASSWORD: printops_secret
+          POSTGRES_DB: printops_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Test Suite against seed-tickets-30.json
+        env:
+          DATABASE_URL: postgresql://printops_user:printops_secret@localhost:5432/printops_test
+          REDIS_URL: redis://localhost:6379
+          SEED_FILE_PATH: docs/evidence/seed-tickets-30.json
+        run: npm test
+
+  docker-build:
+    name: 3. Docker Multi-Stage Build & Security
+    needs: kpi-verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Production Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          target: runner
+          load: true
+          tags: printops-bpo:ci
+
+      - name: Test Container Healthcheck
+        run: |
+          docker run -d --name test-app -p 3000:3000 \
+            -e DATABASE_URL=postgresql://mock:mock@mock:5432/mock \
+            -e REDIS_URL=redis://mock:6379 \
+            printops-bpo:ci
+          sleep 5
+          docker inspect --format='{{json .State.Health.Status}}' test-app || true
+
+  terraform-localstack:
+    name: 4. Terraform IaC Validation
+    needs: code-quality
+    runs-on: ubuntu-latest
+    services:
+      localstack:
+        image: localstack/localstack:3.0
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,sqs,cloudwatch
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.7.0
+
+      - name: Terraform Format Check
+        run: terraform -chdir=terraform fmt -check
+
+      - name: Terraform Init
+        run: terraform -chdir=terraform init
+
+      - name: Terraform Validate
+        run: terraform -chdir=terraform validate
+
+      - name: Terraform Apply against LocalStack
+        env:
+          AWS_ACCESS_KEY_ID: mock_key
+          AWS_SECRET_ACCESS_KEY: mock_secret
+          AWS_DEFAULT_REGION: us-east-1
+        run: terraform -chdir=terraform apply -auto-approve

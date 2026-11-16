@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      target: runner
+    container_name: printops-bpo-api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://printops_user:printops_secret@postgres:5432/printops_bpo?schema=public
+      - REDIS_URL=redis://redis:6379
+      - AWS_ENDPOINT=http://localstack:4566
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - S3_BUCKET_NAME=printops-stl-artifacts-dev
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-mock-dev-key}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_started
+    networks:
+      - printops-net
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: printops-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=printops_user
+      - POSTGRES_PASSWORD=printops_secret
+      - POSTGRES_DB=printops_bpo
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U printops_user -d printops_bpo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - printops-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: printops-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - printops-net
+
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: printops-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3,sqs,cloudwatch
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - localstack_data:/var/lib/localstack
+    networks:
+      - printops-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  localstack_data:
+
+networks:
+  printops-net:
+    driver: bridge
