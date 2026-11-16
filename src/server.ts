@@ -3,6 +3,8 @@
  * Trazabilidad: docs/06-cloud-architecture-ci-cd.md, RF-01 a RF-07
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
 import fastify, { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
 import sensible from '@fastify/sensible';
@@ -21,6 +23,16 @@ export function buildServer(): FastifyInstance {
 
   const rulesEngine = new RulesEngine();
   const queueManager = new RedisQueueManager(process.env.REDIS_URL);
+
+  // 0. Interfaz Visual Web (Frontend de Pruebas BPO)
+  app.get('/', async (_req: FastifyRequest, reply: FastifyReply) => {
+    const htmlPath = path.resolve(__dirname, '../public/index.html');
+    if (fs.existsSync(htmlPath)) {
+      const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+      return reply.type('text/html').send(htmlContent);
+    }
+    return reply.status(200).send({ message: 'PrintOps BPO API activa. Interfaz web en /public/index.html' });
+  });
 
   // 1. Healthcheck Endpoint
   app.get('/health', async (_req: FastifyRequest, reply: FastifyReply) => {
@@ -111,7 +123,8 @@ export function buildServer(): FastifyInstance {
 if (require.main === module) {
   const server = buildServer();
   const port = Number(process.env.PORT) || 3000;
-  server.listen({ port, host: '0.0.0.0' }, (err, address) => {
+  const host = process.env.HOST || '127.0.0.1';
+  server.listen({ port, host }, (err, address) => {
     if (err) {
       console.error(err);
       process.exit(1);
